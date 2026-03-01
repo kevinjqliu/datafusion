@@ -17,7 +17,7 @@
   under the License.
 -->
 
-# Release Process
+# Release Process HELLO WORLD
 
 DataFusion typically has major releases around once per month, including breaking API changes.
 
