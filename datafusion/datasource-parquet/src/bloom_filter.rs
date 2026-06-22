@@ -237,7 +237,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use crate::reader::ParquetFileReader;
+    use crate::reader::{ObjectStoreParquetReader, ParquetFileReader};
     use crate::test_util::ExpectedPruning;
     use crate::{ParquetAccessPlan, ParquetFileMetrics, RowGroupAccessPlanFilter};
 
@@ -252,7 +252,6 @@ mod tests {
     use object_store::ObjectStoreExt;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
-    use parquet::arrow::async_reader::ParquetObjectReader;
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
 
     #[tokio::test]
@@ -643,9 +642,11 @@ mod tests {
         let metrics = ExecutionPlanMetricsSet::new();
         let file_metrics =
             ParquetFileMetrics::new(0, object_meta.location.as_ref(), &metrics);
-        let inner =
-            ParquetObjectReader::new(Arc::new(in_memory), object_meta.location.clone())
-                .with_file_size(object_meta.size);
+        let inner = ObjectStoreParquetReader::new(
+            Arc::new(in_memory),
+            object_meta.location.clone(),
+        )
+        .with_file_size(object_meta.size);
 
         let partitioned_file = PartitionedFile::new_from_meta(object_meta);
 

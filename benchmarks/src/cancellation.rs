@@ -38,7 +38,6 @@ use datafusion_common::instant::Instant;
 use futures::TryStreamExt;
 use object_store::ObjectStore;
 use parquet::arrow::AsyncArrowWriter;
-use parquet::arrow::async_writer::ParquetObjectWriter;
 use rand::Rng;
 use rand::distr::Alphanumeric;
 use rand::rngs::ThreadRng;
@@ -274,10 +273,6 @@ async fn generate_data(
     num_rows_per_file: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let absolute = std::env::current_dir().unwrap().join(data_dir);
-    let store = Arc::new(object_store::local::LocalFileSystem::new_with_prefix(
-        absolute,
-    )?);
-
     let columns = [
         ("A", DataType::Float64),
         ("B", DataType::Float64),
@@ -299,11 +294,9 @@ async fn generate_data(
             (column_name, column)
         });
         let to_write = RecordBatch::try_from_iter(data).unwrap();
-        let path = object_store::path::Path::from(format!("{file_num}.parquet").as_str());
-        let object_store_writer = ParquetObjectWriter::new(Arc::clone(&store) as _, path);
-
-        let mut writer =
-            AsyncArrowWriter::try_new(object_store_writer, to_write.schema(), None)?;
+        let file =
+            tokio::fs::File::create(absolute.join(format!("{file_num}.parquet"))).await?;
+        let mut writer = AsyncArrowWriter::try_new(file, to_write.schema(), None)?;
         writer.write(&to_write).await?;
         writer.close().await?;
     }

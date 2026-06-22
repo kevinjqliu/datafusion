@@ -32,7 +32,8 @@ use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
 use datafusion::datasource::physical_plan::{
-    FileScanConfigBuilder, ParquetFileReaderFactory, ParquetSource,
+    FileScanConfigBuilder, ObjectStoreParquetReader, ParquetFileReaderFactory,
+    ParquetSource,
 };
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
@@ -41,7 +42,7 @@ use datafusion::parquet::arrow::ArrowWriter;
 use datafusion::parquet::arrow::arrow_reader::{
     ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowSelection, RowSelector,
 };
-use datafusion::parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
+use datafusion::parquet::arrow::async_reader::AsyncFileReader;
 use datafusion::parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
 use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties};
 use datafusion::parquet::schema::types::ColumnPath;
@@ -568,9 +569,11 @@ impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
             .to_string();
 
         let object_store = Arc::clone(&self.object_store);
-        let mut inner =
-            ParquetObjectReader::new(object_store, partitioned_file.object_meta.location)
-                .with_file_size(partitioned_file.object_meta.size);
+        let mut inner = ObjectStoreParquetReader::new(
+            object_store,
+            partitioned_file.object_meta.location,
+        )
+        .with_file_size(partitioned_file.object_meta.size);
 
         if let Some(hint) = metadata_size_hint {
             inner = inner.with_footer_size_hint(hint)
@@ -588,11 +591,11 @@ impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
     }
 }
 
-/// wrapper around a ParquetObjectReader that caches metadata
+/// wrapper around an ObjectStoreParquetReader that caches metadata
 struct ParquetReaderWithCache {
     filename: String,
     metadata: Arc<ParquetMetaData>,
-    inner: ParquetObjectReader,
+    inner: ObjectStoreParquetReader,
 }
 
 impl AsyncFileReader for ParquetReaderWithCache {
