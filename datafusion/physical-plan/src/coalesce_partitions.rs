@@ -18,7 +18,6 @@
 //! Defines the merge plan for executing partitions in parallel and then merging the results
 //! into a single partition
 
-use std::any::Any;
 use std::sync::Arc;
 
 use super::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
@@ -31,6 +30,7 @@ use crate::execution_plan::{CardinalityEffect, EvaluationType, SchedulingType};
 use crate::filter_pushdown::{FilterDescription, FilterPushdownPhase};
 use crate::projection::{ProjectionExec, make_with_child};
 use crate::sort_pushdown::SortOrderPushdownResult;
+use crate::statistics::StatisticsArgs;
 use crate::{DisplayFormatType, ExecutionPlan, Partitioning, check_if_same_properties};
 use datafusion_physical_expr_common::sort_expr::PhysicalSortExpr;
 
@@ -142,10 +142,6 @@ impl ExecutionPlan for CoalescePartitionsExec {
     }
 
     /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
@@ -236,10 +232,10 @@ impl ExecutionPlan for CoalescePartitionsExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, _partition: Option<usize>) -> Result<Statistics> {
-        self.input
-            .partition_statistics(None)?
-            .with_fetch(self.fetch, 0, 1)
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        let stats =
+            Arc::unwrap_or_clone(args.compute_child_statistics(&self.input, None)?);
+        Ok(Arc::new(stats.with_fetch(self.fetch, 0, 1)?))
     }
 
     fn supports_limit_pushdown(&self) -> bool {
@@ -349,11 +345,14 @@ impl ExecutionPlan for CoalescePartitionsExec {
 mod tests {
     use super::*;
     use crate::test::exec::{
-        BlockingExec, PanicExec, assert_strong_count_converges_to_zero,
+        BarrierExec, BlockingExec, PanicExec, assert_strong_count_converges_to_zero,
     };
     use crate::test::{self, assert_is_pending};
     use crate::{collect, common};
 
+    use std::time::Duration;
+
+    use arrow::array::RecordBatch;
     use arrow::datatypes::{DataType, Field, Schema};
 
     use futures::FutureExt;
@@ -384,6 +383,45 @@ mod tests {
         // there should be a total of 400 rows (100 per each partition)
         let row_count: usize = batches.iter().map(|batch| batch.num_rows()).sum();
         assert_eq!(row_count, 400);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn drops_input_plan_after_input_streams_start() -> Result<()> {
+        let task_ctx = Arc::new(TaskContext::default());
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Float32, true)]));
+        let input_partitions = 2;
+        let batch = RecordBatch::new_empty(Arc::clone(&schema));
+        let input = Arc::new(
+            BarrierExec::new(vec![vec![batch]; input_partitions], schema)
+                .without_start_barrier()
+                .with_finish_barrier()
+                .with_log(false),
+        );
+        let refs = Arc::downgrade(&input);
+
+        let input_plan: Arc<BarrierExec> = Arc::clone(&input);
+        let coalesce = CoalescePartitionsExec::new(input_plan);
+        let stream = coalesce.execute(0, task_ctx)?;
+        drop(coalesce);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            // Why not `wait_finish` here: that releases the barrier which lets the input tasks
+            // finish, which drops the input Arcs and hides the bug.
+            while !input.is_finish_barrier_reached() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("input streams should reach pending");
+
+        drop(input);
+
+        assert_strong_count_converges_to_zero(refs).await;
+
+        drop(stream);
 
         Ok(())
     }

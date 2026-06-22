@@ -17,7 +17,6 @@
 
 //! Utilities for testing datafusion-physical-plan
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -30,6 +29,7 @@ use crate::common;
 use crate::execution_plan::{Boundedness, EmissionType};
 use crate::memory::MemoryStream;
 use crate::metrics::MetricsSet;
+use crate::statistics::StatisticsArgs;
 use crate::stream::RecordBatchStreamAdapter;
 use crate::streaming::PartitionStream;
 use crate::{DisplayAs, DisplayFormatType, PlanProperties};
@@ -130,10 +130,6 @@ impl ExecutionPlan for TestMemoryExec {
         "DataSourceExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
@@ -169,11 +165,11 @@ impl ExecutionPlan for TestMemoryExec {
         unimplemented!()
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
-        if partition.is_some() {
-            Ok(Statistics::new_unknown(&self.schema))
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        if args.partition().is_some() {
+            Ok(Arc::new(Statistics::new_unknown(&self.schema)))
         } else {
-            self.statistics_inner()
+            Ok(Arc::new(self.statistics_inner()?))
         }
     }
 

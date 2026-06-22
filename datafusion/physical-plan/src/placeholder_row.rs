@@ -17,7 +17,6 @@
 
 //! EmptyRelation produce_one_row=true execution plan
 
-use std::any::Any;
 use std::sync::Arc;
 
 use crate::coop::cooperative;
@@ -34,6 +33,7 @@ use datafusion_common::{Result, assert_or_internal_err};
 use datafusion_execution::TaskContext;
 use datafusion_physical_expr::EquivalenceProperties;
 
+use crate::statistics::StatisticsArgs;
 use log::trace;
 
 /// Execution plan for empty relation with produce_one_row=true
@@ -128,10 +128,6 @@ impl ExecutionPlan for PlaceholderRowExec {
     }
 
     /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
@@ -169,22 +165,22 @@ impl ExecutionPlan for PlaceholderRowExec {
         Ok(Box::pin(cooperative(ms)))
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
         let batches = self
             .data()
             .expect("Create single row placeholder RecordBatch should not fail");
 
-        let batches = match partition {
+        let batches = match args.partition() {
             Some(_) => vec![batches],
             // entire plan
             None => vec![batches; self.partitions],
         };
 
-        Ok(common::compute_record_batch_statistics(
+        Ok(Arc::new(common::compute_record_batch_statistics(
             &batches,
             &self.schema,
             None,
-        ))
+        )))
     }
 }
 

@@ -17,7 +17,6 @@
 
 //! Defines the LIMIT plan
 
-use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -28,6 +27,7 @@ use super::{
     SendableRecordBatchStream, Statistics,
 };
 use crate::execution_plan::{Boundedness, CardinalityEffect};
+use crate::statistics::StatisticsArgs;
 use crate::{
     DisplayFormatType, Distribution, ExecutionPlan, Partitioning,
     check_if_same_properties,
@@ -154,10 +154,6 @@ impl ExecutionPlan for GlobalLimitExec {
     }
 
     /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
@@ -224,10 +220,11 @@ impl ExecutionPlan for GlobalLimitExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
-        self.input
-            .partition_statistics(partition)?
-            .with_fetch(self.fetch, self.skip, 1)
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        let stats = Arc::unwrap_or_clone(
+            args.compute_child_statistics(&self.input, args.partition())?,
+        );
+        Ok(Arc::new(stats.with_fetch(self.fetch, self.skip, 1)?))
     }
 
     fn fetch(&self) -> Option<usize> {
@@ -333,10 +330,6 @@ impl ExecutionPlan for LocalLimitExec {
     }
 
     /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
@@ -392,10 +385,11 @@ impl ExecutionPlan for LocalLimitExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
-        self.input
-            .partition_statistics(partition)?
-            .with_fetch(Some(self.fetch), 0, 1)
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        let stats = Arc::unwrap_or_clone(
+            args.compute_child_statistics(&self.input, args.partition())?,
+        );
+        Ok(Arc::new(stats.with_fetch(Some(self.fetch), 0, 1)?))
     }
 
     fn fetch(&self) -> Option<usize> {
@@ -541,6 +535,7 @@ mod tests {
     use super::*;
     use crate::coalesce_partitions::CoalescePartitionsExec;
     use crate::common::collect;
+    use crate::statistics::StatisticsArgs;
     use crate::test;
 
     use crate::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
@@ -774,9 +769,12 @@ mod tests {
             row_number_inexact_statistics_for_global_limit(5, Some(10)).await?;
         assert_eq!(row_count, Precision::Inexact(10));
 
+        // Input was Inexact, so an `nr <= skip` outcome must remain Inexact:
+        // the inexact estimate could be wrong, so we cannot promote 0 to
+        // Exact.
         let row_count =
             row_number_inexact_statistics_for_global_limit(400, Some(10)).await?;
-        assert_eq!(row_count, Precision::Exact(0));
+        assert_eq!(row_count, Precision::Inexact(0));
 
         let row_count =
             row_number_inexact_statistics_for_global_limit(398, Some(10)).await?;
@@ -820,7 +818,9 @@ mod tests {
         let offset =
             GlobalLimitExec::new(Arc::new(CoalescePartitionsExec::new(csv)), skip, fetch);
 
-        Ok(offset.partition_statistics(None)?.num_rows)
+        Ok(offset
+            .statistics_with_args(&StatisticsArgs::new())?
+            .num_rows)
     }
 
     pub fn build_group_by(
@@ -860,7 +860,9 @@ mod tests {
             fetch,
         );
 
-        Ok(offset.partition_statistics(None)?.num_rows)
+        Ok(offset
+            .statistics_with_args(&StatisticsArgs::new())?
+            .num_rows)
     }
 
     async fn row_number_statistics_for_local_limit(
@@ -873,7 +875,9 @@ mod tests {
 
         let offset = LocalLimitExec::new(csv, fetch);
 
-        Ok(offset.partition_statistics(None)?.num_rows)
+        Ok(offset
+            .statistics_with_args(&StatisticsArgs::new())?
+            .num_rows)
     }
 
     /// Return a RecordBatch with a single array with row_count sz

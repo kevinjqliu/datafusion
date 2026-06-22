@@ -51,7 +51,6 @@
 //! The plan concats incoming data with such last rows of previous input
 //! and continues partial sorting of the segments.
 
-use std::any::Any;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -59,6 +58,8 @@ use std::task::{Context, Poll};
 
 use crate::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use crate::sorts::sort::sort_batch;
+use crate::statistics::StatisticsArgs;
+use crate::stream::EmptyRecordBatchStream;
 use crate::{
     DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, ExecutionPlanProperties,
     Partitioning, PlanProperties, SendableRecordBatchStream, Statistics,
@@ -259,10 +260,6 @@ impl ExecutionPlan for PartialSortExec {
         "PartialSortExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
@@ -338,8 +335,8 @@ impl ExecutionPlan for PartialSortExec {
         Some(self.metrics_set.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
-        self.input.partition_statistics(partition)
+    fn statistics_with_args(&self, args: &StatisticsArgs) -> Result<Arc<Statistics>> {
+        args.compute_child_statistics(&self.input, args.partition())
     }
 }
 
@@ -396,6 +393,9 @@ impl PartialSortStream {
             // Check if we've already reached the fetch limit
             if self.fetch == Some(0) {
                 self.is_closed = true;
+                // Release the input pipeline's resources.
+                let input_schema = self.input.schema();
+                self.input = Box::pin(EmptyRecordBatchStream::new(input_schema));
                 return Poll::Ready(None);
             }
 
@@ -429,6 +429,9 @@ impl PartialSortStream {
                 Some(Err(e)) => return Poll::Ready(Some(Err(e))),
                 None => {
                     self.is_closed = true;
+                    // Release the input pipeline's resources before sorting.
+                    let input_schema = self.input.schema();
+                    self.input = Box::pin(EmptyRecordBatchStream::new(input_schema));
                     // Once input is consumed, sort the rest of the inserted batches
                     let remaining_batch = self.sort_in_mem_batch()?;
                     return if remaining_batch.num_rows() > 0 {
